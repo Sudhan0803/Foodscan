@@ -1,11 +1,9 @@
+
 import React, { useState, useCallback } from 'react';
 import { Product, NutrientInfo } from './types';
 import { fetchProductByBarcode, getRandomBarcode } from './services/foodDataService';
 import { BarcodeIcon, HistoryIcon, ScienceIcon, CameraIcon, BackIcon, ImageIcon } from './components/Icons';
 import { GoogleGenAI } from "@google/genai";
-
-// Initialize the Gemini AI model
-const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
 
 type Tab = 'scan' | 'history' | 'learn';
 type BisStatus = 'unknown' | 'certified' | 'not_required';
@@ -163,6 +161,8 @@ const GeminiAnalysis: React.FC<{ product: Product; onAnalysisComplete: (status: 
         setAnalysis(null);
         setSources([]);
         try {
+            // Initialize the Gemini AI model just-in-time
+            const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
             const prompt = `Act as a food safety expert for Indian consumers, with a deep focus on BIS standards.
 For the food product "${product.name}" (category: "${product.category}"), perform a web search and provide the following information in markdown format.
 
@@ -342,6 +342,8 @@ const ScannerComponent: React.FC<ScannerComponentProps> = ({ onScan, isLoading, 
         onError(''); // Clear previous errors
 
         try {
+            // Initialize the Gemini AI model just-in-time
+            const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
             const imagePart = await fileToGenerativePart(file);
             const response = await ai.models.generateContent({
                 model: 'gemini-2.5-flash',
