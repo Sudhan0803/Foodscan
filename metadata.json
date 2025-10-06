@@ -1,0 +1,7 @@
+{
+  "name": "FoodScan – Verify Your Standards",
+  "description": "An application to scan or enter food product barcodes to verify FSSAI certification, manufacturer details, and safety standards.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

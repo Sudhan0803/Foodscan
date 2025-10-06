@@ -1,0 +1,559 @@
+import React, { useState, useCallback } from 'react';
+import { Product, NutrientInfo } from './types';
+import { fetchProductByBarcode, getRandomBarcode } from './services/foodDataService';
+import { BarcodeIcon, HistoryIcon, ScienceIcon, CameraIcon, BackIcon, ImageIcon } from './components/Icons';
+import { GoogleGenAI } from "@google/genai";
+
+// Initialize the Gemini AI model
+const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
+
+type Tab = 'scan' | 'history' | 'learn';
+type BisStatus = 'unknown' | 'certified' | 'not_required';
+
+
+// --- Data & Helper Components ---
+
+const ADDITIVE_INFO: { [key: string]: { name: string; purpose: string } } = {
+  'E322': { name: 'Lecithins', purpose: 'An emulsifier, it helps mix ingredients like oil and water that normally would not mix. Often sourced from soy or sunflowers.' },
+  'E412': { name: 'Guar Gum', purpose: 'A thickening agent that gives food a more stable and consistent texture. Used in ice creams, sauces, and gluten-free products.' },
+  'E330': { name: 'Citric Acid', purpose: 'Used as a preservative and to add a sour, acidic flavor. It\'s naturally found in citrus fruits.' },
+  'E211': { name: 'Sodium Benzoate', purpose: 'A preservative that prevents the growth of bacteria, yeast, and mold in acidic foods like soft drinks and salad dressings.' },
+  'E951': { name: 'Aspartame', purpose: 'An artificial sweetener that is about 200 times sweeter than sugar, used to reduce calorie content.' },
+  'E150D': { name: 'Sulphite ammonia caramel', purpose: 'A food coloring, it provides a rich brown color to beverages like cola, baked goods, and sauces.' },
+};
+
+// Helper to convert a File object to a GoogleGenerativeAI.Part
+const fileToGenerativePart = async (file: File) => {
+  const base64EncodedDataPromise = new Promise<string>((resolve) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
+    reader.readAsDataURL(file);
+  });
+  return {
+    inlineData: { data: await base64EncodedDataPromise, mimeType: file.type },
+  };
+};
+
+
+const Header: React.FC = () => (
+  <header className="bg-white shadow-md sticky top-0 z-10">
+    <div className="max-w-4xl mx-auto p-4 flex flex-col items-center text-center">
+      <div className="flex items-center space-x-2">
+        <h1 className="text-3xl font-bold text-slate-800">Science in My Snack 🍪</h1>
+      </div>
+      <p className="text-sm text-slate-500 mt-1">Understand the science in your food.</p>
+    </div>
+  </header>
+);
+
+const HealthMeter: React.FC<{ status: BisStatus }> = ({ status }) => {
+    const getMeterData = () => {
+        switch (status) {
+            case 'certified':
+                return {
+                    width: '100%',
+                    color: 'bg-green-500',
+                    label: 'BIS Certified Category',
+                    description: 'This product category is typically covered by BIS standards, indicating a high level of quality control.'
+                };
+            case 'not_required':
+                 return {
+                    width: '50%',
+                    color: 'bg-amber-500',
+                    label: 'BIS Certification Not Mandatory',
+                    description: 'BIS certification is not typically required for this food category. Check FSSAI standards.'
+                };
+            default: // 'unknown'
+                return {
+                    width: '10%',
+                    color: 'bg-slate-300',
+                    label: 'Health & Safety Rating',
+                    description: 'Analyze the product to check its BIS and FSSAI standard compliance.'
+                };
+        }
+    };
+
+    const { width, color, label, description } = getMeterData();
+
+    return (
+        <div className="bg-slate-50 p-4 rounded-lg">
+            <h4 className="text-sm font-bold text-slate-800 mb-2">{label}</h4>
+            <div className="w-full bg-slate-200 rounded-full h-2.5">
+                <div className={`h-2.5 rounded-full transition-all duration-500 ${color}`} style={{ width }}></div>
+            </div>
+            <p className="text-xs text-slate-500 mt-2">{description}</p>
+        </div>
+    );
+};
+
+
+const NutrientDisplay: React.FC<{ nutrients: NutrientInfo }> = ({ nutrients }) => (
+  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
+    <div className="bg-sky-50 p-3 rounded-lg">
+        <p className="text-xs text-sky-600 font-semibold">CALORIES</p>
+        <p className="text-xl font-bold text-sky-800">{nutrients.calories}</p>
+    </div>
+    <div className="bg-red-50 p-3 rounded-lg">
+        <p className="text-xs text-red-600 font-semibold">FAT</p>
+        <p className="text-xl font-bold text-red-800">{nutrients.fat}</p>
+    </div>
+    <div className="bg-yellow-50 p-3 rounded-lg">
+        <p className="text-xs text-yellow-600 font-semibold">CARBS</p>
+        <p className="text-xl font-bold text-yellow-800">{nutrients.carbs}</p>
+    </div>
+    <div className="bg-green-50 p-3 rounded-lg">
+        <p className="text-xs text-green-600 font-semibold">PROTEIN</p>
+        <p className="text-xl font-bold text-green-800">{nutrients.protein}</p>
+    </div>
+  </div>
+);
+
+const IngredientsDisplay: React.FC<{ ingredients: string; additives: string[] }> = ({ ingredients, additives }) => {
+    const [showModal, setShowModal] = useState<string | null>(null);
+
+    const ingredientParts = ingredients.split(/, |(?=\[)|(?<=\])/).map(part => part.trim().replace(/_|\*/g, ''));
+
+    return (
+        <div>
+            <h4 className="font-bold text-slate-800 mb-2">Ingredients & Additives</h4>
+            <p className="text-sm text-slate-600 leading-relaxed bg-slate-50 p-4 rounded-lg">
+                {ingredientParts.map((part, index) => {
+                    const knownAdditive = additives.find(a => part.toUpperCase().includes(a));
+                    if (knownAdditive && ADDITIVE_INFO[knownAdditive]) {
+                        return (
+                            <React.Fragment key={index}>
+                                <button
+                                    onClick={() => setShowModal(knownAdditive)}
+                                    className="font-semibold text-brand-dark underline decoration-dotted hover:text-orange-700"
+                                >
+                                    {part}
+                                </button>
+                                {index < ingredientParts.length - 1 ? ', ' : ''}
+                            </React.Fragment>
+                        );
+                    }
+                    return `${part}${index < ingredientParts.length - 1 ? ', ' : ''}`;
+                })}
+            </p>
+
+            {showModal && ADDITIVE_INFO[showModal] && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowModal(null)}>
+                    <div className="bg-white rounded-2xl p-6 max-w-sm w-full animate-fade-in" onClick={e => e.stopPropagation()}>
+                        <h5 className="text-lg font-bold text-brand-dark">{ADDITIVE_INFO[showModal].name} ({showModal})</h5>
+                        <p className="text-slate-600 mt-2">{ADDITIVE_INFO[showModal].purpose}</p>
+                        <button onClick={() => setShowModal(null)} className="mt-4 w-full bg-slate-200 text-slate-800 font-semibold py-2 rounded-lg hover:bg-slate-300 transition">
+                            Close
+                        </button>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
+const GeminiAnalysis: React.FC<{ product: Product; onAnalysisComplete: (status: BisStatus) => void; }> = ({ product, onAnalysisComplete }) => {
+    const [analysis, setAnalysis] = useState<string | null>(null);
+    const [sources, setSources] = useState<{uri: string, title: string}[]>([]);
+    const [isAnalyzing, setIsAnalyzing] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    const handleAnalysis = async () => {
+        setIsAnalyzing(true);
+        setError(null);
+        setAnalysis(null);
+        setSources([]);
+        try {
+            const prompt = `Act as a food safety expert for Indian consumers, with a deep focus on BIS standards.
+For the food product "${product.name}" (category: "${product.category}"), perform a web search and provide the following information in markdown format.
+
+**BIS Certification Analysis:**
+1.  Does this product category require mandatory BIS certification (ISI Mark)?
+2.  If yes, what is the specific Indian Standard (IS) number that applies?
+3.  Based on that IS standard, list 2-3 of the most important safety/quality limitations (e.g., 'Maximum permissible limit of lead: 0.2 mg/kg', 'Total bacterial count: Not to exceed 100 cfu/g'). Be specific.
+4.  If BIS is not mandatory, state that clearly.
+
+**FSSAI Regulations:**
+- Briefly mention the key FSSAI regulations applicable to this product regarding labeling and ingredients.
+
+**Health Summary:**
+- Summarize any key health considerations based on its ingredients or typical nutritional profile.`;
+
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: prompt,
+                config: {
+                    tools: [{googleSearch: {}}],
+                },
+            });
+
+            const responseText = response.text;
+            setAnalysis(responseText);
+            
+            // Determine BIS status from the response text
+            if (responseText.toLowerCase().includes("does not require mandatory bis") || responseText.toLowerCase().includes("bis is not mandatory")) {
+                onAnalysisComplete('not_required');
+            } else if (responseText.toLowerCase().includes("requires mandatory bis") || /IS \d+/.test(responseText)) {
+                 onAnalysisComplete('certified');
+            }
+
+
+            const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
+            if (groundingChunks) {
+                const webSources = groundingChunks
+                    .map((chunk: any) => chunk.web)
+                    .filter((web: any) => web && web.uri && web.title)
+                    .filter((value: any, index: number, self: any[]) =>
+                        index === self.findIndex((t: any) => (t.uri === value.uri))
+                    );
+                setSources(webSources);
+            }
+
+        } catch (e) {
+            console.error("Error during Gemini analysis:", e);
+            setError("Sorry, something went wrong while analyzing. Please try again.");
+            onAnalysisComplete('unknown'); // Reset status on error
+        } finally {
+            setIsAnalyzing(false);
+        }
+    };
+
+    return (
+        <div className="border-t border-slate-200 pt-6 space-y-4">
+            {!analysis && !isAnalyzing && (
+                 <button
+                    onClick={handleAnalysis}
+                    className="w-full flex items-center justify-center gap-2 bg-indigo-600 text-white font-bold py-3 px-4 rounded-xl hover:bg-indigo-700 transition-transform transform hover:scale-105 shadow-lg disabled:bg-slate-400 disabled:transform-none"
+                    disabled={isAnalyzing}
+                >
+                    <ScienceIcon className="w-5 h-5" />
+                    Analyze Indian Food Standards
+                </button>
+            )}
+
+            {isAnalyzing && (
+                <div className="text-center p-4 bg-slate-50 rounded-lg">
+                    <p className="font-semibold text-indigo-600 animate-pulse">Analyzing...</p>
+                    <p className="text-sm text-slate-500 mt-1">Checking BIS, FSSAI, and health data...</p>
+                </div>
+            )}
+            
+            {error && <p className="text-red-600 bg-red-100 p-3 rounded-lg text-sm">{error}</p>}
+
+            {analysis && (
+                <div className="text-sm text-slate-700 leading-relaxed bg-slate-50 p-4 rounded-lg space-y-2 animate-fade-in">
+                    {analysis.split('\n').map((line, index) => {
+                        const trimmedLine = line.trim();
+                        if (trimmedLine.startsWith('**') && trimmedLine.endsWith('**')) {
+                            return <h5 key={index} className="font-bold text-slate-800 mt-3 text-base">{trimmedLine.replace(/\*\*/g, '')}</h5>;
+                        }
+                         if (trimmedLine.startsWith('- ') || /^\d+\./.test(trimmedLine)) {
+                            return <p key={index} className="pl-2">{trimmedLine}</p>;
+                        }
+                        if (trimmedLine) {
+                            return <p key={index}>{trimmedLine}</p>;
+                        }
+                        return null;
+                    })}
+                </div>
+            )}
+
+            {sources.length > 0 && (
+                <div className="animate-fade-in pt-2">
+                     <h6 className="text-xs font-bold text-slate-600 mb-1">Sources:</h6>
+                    <ul className="list-disc list-inside space-y-1">
+                        {sources.map((source, index) => (
+                             <li key={index} className="text-xs truncate">
+                                <a href={source.uri} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline" title={source.title}>
+                                    {source.title}
+                                </a>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )}
+        </div>
+    );
+}
+
+interface ProductCardProps {
+  product: Product;
+  onBack: () => void;
+}
+
+const ProductCard: React.FC<ProductCardProps> = ({ product, onBack }) => {
+  const [bisStatus, setBisStatus] = useState<BisStatus>('unknown');
+
+  return (
+    <div className="w-full max-w-md mx-auto bg-white rounded-2xl shadow-lg overflow-hidden p-6 animate-fade-in space-y-6">
+        <button onClick={onBack} className="flex items-center text-sm text-brand-dark font-semibold hover:underline">
+            <BackIcon className="w-4 h-4 mr-1"/>
+            Scan Another Product
+        </button>
+        <div className="flex flex-col md:flex-row gap-6 items-center">
+            <img
+              className="h-32 w-32 md:h-40 md:w-40 object-cover rounded-xl flex-shrink-0"
+              src={product.imageUrl}
+              alt={product.name}
+            />
+            <div className="flex-grow text-center md:text-left">
+              <p className="text-xs text-slate-500">{product.category}</p>
+              <h2 className="text-2xl font-bold text-slate-800">{product.name}</h2>
+              <p className="text-sm text-slate-600">{product.manufacturer}</p>
+            </div>
+        </div>
+        
+        <div className="space-y-6">
+            <HealthMeter status={bisStatus} />
+            <div>
+                <h4 className="font-bold text-slate-800 mb-2">Nutrition at a Glance <span className="text-xs font-normal text-slate-500">(per 100g)</span></h4>
+                <NutrientDisplay nutrients={product.nutrients} />
+            </div>
+            <IngredientsDisplay ingredients={product.ingredients} additives={product.additives} />
+        </div>
+        <GeminiAnalysis product={product} onAnalysisComplete={setBisStatus} />
+    </div>
+  );
+};
+
+interface ScannerComponentProps {
+    onScan: (barcode: string) => void;
+    isLoading: boolean;
+    onError: (message: string) => void;
+}
+
+const ScannerComponent: React.FC<ScannerComponentProps> = ({ onScan, isLoading, onError }) => {
+    const [manualBarcode, setManualBarcode] = useState('');
+    const [isProcessingImage, setIsProcessingImage] = useState(false);
+    
+    const effectiveIsLoading = isLoading || isProcessingImage;
+
+    const handleSimulatedScan = () => { if (!effectiveIsLoading) onScan(getRandomBarcode()); };
+    
+    const handleManualSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (manualBarcode.trim() && !effectiveIsLoading) onScan(manualBarcode.trim());
+    };
+
+    const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+
+        setIsProcessingImage(true);
+        onError(''); // Clear previous errors
+
+        try {
+            const imagePart = await fileToGenerativePart(file);
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: {
+                    parts: [
+                        imagePart,
+                        { text: 'Analyze this image of a food product. Find the barcode and return only the numerical digits of the barcode. If no barcode is visible, return the word "null".' }
+                    ]
+                },
+            });
+            
+            const barcode = response.text.trim();
+
+            if (barcode && barcode.toLowerCase() !== 'null' && /^\d+$/.test(barcode)) {
+                onScan(barcode);
+            } else {
+                onError("Could not find a barcode in the uploaded image. Please try a clearer photo.");
+            }
+        } catch (err) {
+            console.error("Error processing image with Gemini:", err);
+            onError("An error occurred while analyzing the image.");
+        } finally {
+            setIsProcessingImage(false);
+            event.target.value = ''; // Allow re-uploading the same file
+        }
+    };
+
+    const commonButtonStyles = "w-full flex items-center justify-center gap-3 font-bold py-3 px-4 rounded-xl shadow-lg transition-transform transform hover:scale-105 disabled:bg-slate-400 disabled:cursor-not-allowed disabled:transform-none";
+
+    return (
+        <div className="w-full max-w-md mx-auto space-y-6">
+            <div className="relative w-full aspect-square bg-slate-900 rounded-2xl overflow-hidden flex flex-col items-center justify-center p-4 shadow-inner">
+                <div className="absolute inset-0 bg-black opacity-50"></div>
+                <div className="absolute top-0 left-0 w-full h-full animate-scan-line bg-gradient-to-b from-transparent via-brand to-transparent"></div>
+                <CameraIcon className="w-16 h-16 text-white/50 mb-4" />
+                <p className="text-white/80 text-center">Place barcode inside the frame</p>
+                <p className="text-sm text-white/60 text-center">Scanning will start automatically</p>
+            </div>
+            
+            <div className="grid grid-cols-2 gap-4">
+                 <button onClick={handleSimulatedScan} disabled={effectiveIsLoading} className={`${commonButtonStyles} bg-brand-dark text-white hover:bg-orange-700`}>
+                    {isLoading ? 'Scanning...' : 'Simulate Scan'}
+                 </button>
+                 <label htmlFor="image-upload" className={`${commonButtonStyles} bg-sky-600 text-white hover:bg-sky-700 cursor-pointer`}>
+                    <ImageIcon className="w-5 h-5"/>
+                    {isProcessingImage ? 'Analyzing...' : 'Upload Image'}
+                 </label>
+                 <input id="image-upload" type="file" accept="image/*" className="hidden" onChange={handleImageUpload} disabled={effectiveIsLoading} />
+            </div>
+
+            <div className="text-center text-slate-500">OR</div>
+            <form onSubmit={handleManualSubmit} className="space-y-2">
+                <input type="text" value={manualBarcode} onChange={(e) => setManualBarcode(e.target.value)} placeholder="Enter barcode number manually" className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-brand focus:border-brand-dark transition" />
+                <button type="submit" disabled={effectiveIsLoading} className="w-full bg-slate-600 text-white font-bold py-3 px-4 rounded-xl hover:bg-slate-700 transition disabled:bg-slate-400 disabled:cursor-not-allowed">
+                    {isLoading ? 'Verifying...' : 'Verify Manually'}
+                </button>
+            </form>
+        </div>
+    );
+};
+
+interface HistoryViewProps {
+  history: Product[];
+  onSelect: (product: Product) => void;
+}
+
+const HistoryView: React.FC<HistoryViewProps> = ({ history, onSelect }) => (
+  <div className="w-full max-w-md mx-auto space-y-3">
+    {history.length === 0 ? (
+      <p className="text-center text-slate-500 py-8">Your scan history is empty.</p>
+    ) : (
+      history.map((product, index) => (
+        <button key={`${product.barcode}-${index}`} onClick={() => onSelect(product)} className="w-full flex items-center gap-4 p-3 bg-white rounded-xl shadow-sm hover:shadow-md hover:bg-brand-light transition text-left">
+          <img src={product.imageUrl} alt={product.name} className="w-12 h-12 object-cover rounded-md" />
+          <div>
+            <p className="font-semibold text-slate-800">{product.name}</p>
+            <p className="text-xs text-slate-500">{product.barcode}</p>
+          </div>
+        </button>
+      ))
+    )}
+  </div>
+);
+
+const LearnMoreView: React.FC = () => (
+    <div className="w-full max-w-md mx-auto bg-white p-6 rounded-2xl shadow-lg space-y-6 text-slate-700 animate-fade-in">
+        <h3 className="text-2xl font-bold text-slate-800 text-brand-dark">Understanding Indian Food Standards</h3>
+        <p>Making informed choices starts with understanding the marks of quality and safety on your food.</p>
+        
+        <div className="space-y-4">
+            <h4 className="text-xl font-bold text-slate-800">BIS & The ISI Mark: A Mark of Quality</h4>
+            <p>The <strong>Bureau of Indian Standards (BIS)</strong> is the National Standards Body of India. It ensures the quality, safety, and reliability of products.</p>
+            <p>The <span className="font-mono font-bold">[ISI]</span> mark is the most recognized certification mark in India. When you see it on a food product, it means:</p>
+            <ul className="list-disc list-inside space-y-2 pl-4 text-slate-600">
+                <li><strong>Third-Party Tested:</strong> The product has been tested in independent, BIS-approved labs against a specific Indian Standard (IS).</li>
+                <li><strong>Meets Safety Limits:</strong> It complies with strict limits for harmful substances like heavy metals, pesticides, and microbiological contaminants.</li>
+                <li><strong>Consistent Quality:</strong> The manufacturer's production process is regularly audited by BIS to ensure consistent quality is maintained.</li>
+            </ul>
+        </div>
+
+        <div className="space-y-4">
+            <h5 className="font-bold text-slate-800">Common Foods with Mandatory BIS Certification:</h5>
+            <div className="space-y-3">
+                <div className="bg-slate-50 p-3 rounded-lg">
+                    <p className="font-semibold text-slate-700">Packaged Drinking Water (IS 14543)</p>
+                    <p className="text-sm text-slate-600 mt-1">Guarantees the water is safe from harmful bacteria (like E.coli), toxic chemicals, and pesticides, while ensuring it meets pH and mineral content limits.</p>
+                </div>
+                 <div className="bg-slate-50 p-3 rounded-lg">
+                    <p className="font-semibold text-slate-700">Milk Powder (IS 1165)</p>
+                    <p className="text-sm text-slate-600 mt-1">Ensures minimum levels of milk fat and protein for nutritional value, and verifies the powder is free from adulterants and harmful bacteria.</p>
+                </div>
+                 <div className="bg-slate-50 p-3 rounded-lg">
+                    <p className="font-semibold text-slate-700">Infant Milk Substitutes (IS 14433)</p>
+                    <p className="text-sm text-slate-600 mt-1">Sets strict requirements for nutritional content, including precise levels of vitamins, minerals, and protein, vital for a baby's healthy growth.</p>
+                </div>
+                 <div className="bg-slate-50 p-3 rounded-lg">
+                    <p className="font-semibold text-slate-700">Follow-up Formula (IS 15757)</p>
+                    <p className="text-sm text-slate-600 mt-1">Specifies the exact nutritional composition required for infants over six months, ensuring a balanced diet and safety from contaminants.</p>
+                </div>
+            </div>
+        </div>
+        
+        <div className="border-t pt-4 space-y-4">
+            <h4 className="font-bold text-slate-800">Other Key Certifications</h4>
+            <div>
+                <h5 className="font-semibold">FSSAI License</h5>
+                <p className="text-sm">Mandatory for all food businesses in India. The FSSAI license number ensures the operator meets essential hygiene and food handling standards. It's the baseline for food safety.</p>
+            </div>
+            <div>
+                <h5 className="font-semibold">AGMARK</h5>
+                <p className="text-sm">A certification for agricultural products (like spices, ghee, honey). It assures that the product's purity and quality meet standards set by the government, protecting you from adulteration.</p>
+            </div>
+        </div>
+    </div>
+);
+
+
+// --- Main App Component ---
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState<Tab>('scan');
+  const [currentProduct, setCurrentProduct] = useState<Product | null>(null);
+  const [history, setHistory] = useState<Product[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleScan = useCallback(async (barcode: string) => {
+    if (!barcode) return;
+    setIsLoading(true);
+    setCurrentProduct(null);
+    setError(null);
+    try {
+      const product = await fetchProductByBarcode(barcode);
+      setCurrentProduct(product);
+      if (product.name !== 'Product Not Found') {
+        setHistory(prev => [product, ...prev.filter(p => p.barcode !== product.barcode)]);
+      }
+    } catch (err) {
+      setError('Failed to fetch product data.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const handleSelectHistoryItem = (product: Product) => {
+      setCurrentProduct(product);
+      setActiveTab('scan');
+  };
+
+  const handleBackToScanner = () => setCurrentProduct(null);
+  
+  const renderContent = () => {
+    if (activeTab === 'scan') {
+      if (isLoading) return <div className="text-center p-10 font-semibold text-brand-dark animate-pulse">Loading product details...</div>;
+      if (currentProduct) return <ProductCard product={currentProduct} onBack={handleBackToScanner} />;
+      return <ScannerComponent onScan={handleScan} isLoading={isLoading} onError={setError} />;
+    }
+    if (activeTab === 'history') return <HistoryView history={history} onSelect={handleSelectHistoryItem} />;
+    if (activeTab === 'learn') return <LearnMoreView />;
+    return null;
+  };
+  
+  const TabButton: React.FC<{tab: Tab, label: string, icon: React.ReactNode}> = ({tab, label, icon}) => {
+    const isActive = activeTab === tab;
+    return (
+        <button onClick={() => setActiveTab(tab)} className={`flex-1 flex flex-col items-center justify-center pt-2 pb-1 transition-colors duration-200 ${isActive ? 'text-brand-dark' : 'text-slate-500 hover:text-brand-dark'}`}>
+            {icon}
+            <span className={`text-xs font-semibold mt-1 transition-all ${isActive ? 'opacity-100' : 'opacity-0 h-0'}`}>{label}</span>
+        </button>
+    )
+  }
+
+  return (
+    <div className="min-h-screen bg-brand-light flex flex-col font-sans">
+      <Header />
+      <main className="flex-grow p-4 md:p-6">
+        {error && <p className="text-center text-red-600 bg-red-100 p-3 rounded-lg mb-4">{error}</p>}
+        {renderContent()}
+      </main>
+      <nav className="sticky bottom-0 bg-white shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
+        <div className="max-w-4xl mx-auto flex justify-around">
+            <TabButton tab="scan" label="Scan" icon={<BarcodeIcon className={`w-6 h-6 ${activeTab === 'scan' ? 'text-brand-dark' : ''}`}/>} />
+            <TabButton tab="history" label="History" icon={<HistoryIcon className={`w-6 h-6 ${activeTab === 'history' ? 'text-brand-dark' : ''}`}/>} />
+            <TabButton tab="learn" label="Learn" icon={<ScienceIcon className={`w-6 h-6 ${activeTab === 'learn' ? 'text-brand-dark' : ''}`}/>} />
+        </div>
+      </nav>
+      <style>{`
+        @keyframes scan-line { 0% { transform: translateY(-100%); } 100% { transform: translateY(100%); } }
+        .animate-scan-line { animation: scan-line 3s ease-in-out infinite; height: 100%; }
+        @keyframes fade-in { 0% { opacity: 0; transform: translateY(10px); } 100% { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in { animation: fade-in 0.5s ease-out forwards; }
+      `}</style>
+    </div>
+  );
+}
