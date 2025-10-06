@@ -37,16 +37,9 @@
     <div id="root"></div>
     <script type="text/babel" data-type="module">
 // --- IMPORTS ---
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
-import { GoogleGenAI } from "@google/genai";
-
-// --- CONFIGURATION ---
-// IMPORTANT: Replace "YOUR_API_KEY" with your actual Google API key
-const API_KEY = "AIzaSyADKRoWhuAbbE1XMQyaT4kskYSGBGR8CMI";
-
-// --- START of types.ts ---
-// Note: Interfaces are used for type-checking and are removed during transpilation.
+import { GoogleGenAI, Type } from "@google/genai";
 
 // --- START of services/foodDataService.ts ---
 const REAL_BARCODES_FOR_SIMULATION = [
@@ -289,10 +282,22 @@ const IngredientsDisplay = ({ ingredients, additives }) => {
 };
 
 const GeminiAnalysis = ({ product, onAnalysisComplete }) => {
-    const [analysis, setAnalysis] = useState(null);
-    const [sources, setSources] = useState([]);
+    const [analysis, setAnalysis] = useState(product.analysis?.text || null);
+    const [sources, setSources] = useState(product.analysis?.sources || []);
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [error, setError] = useState(null);
+
+    useEffect(() => {
+        if (product.analysis) {
+            setAnalysis(product.analysis.text);
+            setSources(product.analysis.sources);
+            onAnalysisComplete(product.analysis.bisStatus || 'unknown');
+        } else {
+            setAnalysis(null);
+            setSources([]);
+            onAnalysisComplete('unknown');
+        }
+    }, [product]);
 
     const handleAnalysis = async () => {
         setIsAnalyzing(true);
@@ -300,16 +305,15 @@ const GeminiAnalysis = ({ product, onAnalysisComplete }) => {
         setAnalysis(null);
         setSources([]);
 
-        // Robust check for API Key availability
-        if (!API_KEY || API_KEY === "YOUR_API_KEY") {
-            setError("API Key not found. Please add your API key to the script in index.html.");
+        if (!process.env.API_KEY) {
+            setError("Analysis feature is not configured. Please contact support.");
             setIsAnalyzing(false);
             onAnalysisComplete('unknown');
             return;
         }
         
         try {
-            const ai = new GoogleGenAI({apiKey: API_KEY});
+            const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
             const prompt = `Act as a food safety expert for Indian consumers, with a deep focus on BIS standards.
 For the food product "${product.name}" (category: "${product.category}"), perform a web search and provide the following information in markdown format.
 
@@ -355,7 +359,7 @@ For the food product "${product.name}" (category: "${product.category}"), perfor
 
         } catch (e) {
             console.error("Error during Gemini analysis:", e);
-            setError("Sorry, something went wrong while analyzing. Please try again.");
+            setError(`Analysis failed: ${e.message}.`);
             onAnalysisComplete('unknown');
         } finally {
             setIsAnalyzing(false);
@@ -417,7 +421,7 @@ For the food product "${product.name}" (category: "${product.category}"), perfor
 }
 
 const ProductCard = ({ product, onBack }) => {
-  const [bisStatus, setBisStatus] = useState('unknown');
+  const [bisStatus, setBisStatus] = useState(product.analysis?.bisStatus || 'unknown');
 
   return (
     <div className="w-full max-w-md mx-auto bg-white rounded-2xl shadow-lg overflow-hidden p-6 animate-fade-in space-y-6">
@@ -467,15 +471,15 @@ const ScannerComponent = ({ onScan, isLoading, onError }) => {
         setIsProcessingImage(true);
         onError(''); 
 
-        if (!API_KEY || API_KEY === "YOUR_API_KEY") {
-            onError("API Key not found. Please add your API key to the script in index.html to enable image uploads.");
+        if (!process.env.API_KEY) {
+            onError("Image analysis feature is not available. API key not configured.");
             setIsProcessingImage(false);
             event.target.value = '';
             return;
         }
 
         try {
-            const ai = new GoogleGenAI({apiKey: API_KEY});
+            const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
             const imagePart = await fileToGenerativePart(file);
             const response = await ai.models.generateContent({
                 model: 'gemini-2.5-flash',
@@ -492,11 +496,11 @@ const ScannerComponent = ({ onScan, isLoading, onError }) => {
             if (barcode && barcode.toLowerCase() !== 'null' && /^\d+$/.test(barcode)) {
                 onScan(barcode);
             } else {
-                onError("Could not find a barcode in the uploaded image. Please try a clearer photo.");
+                onError("Could not find a barcode in the uploaded image. Please try a clearer photo or enter it manually.");
             }
         } catch (err) {
             console.error("Error processing image with Gemini:", err);
-            onError("An error occurred while analyzing the image.");
+            onError(`Image analysis failed: ${err.message}.`);
         } finally {
             setIsProcessingImage(false);
             event.target.value = '';
@@ -547,7 +551,7 @@ const HistoryView = ({ history, onSelect }) => (
           <img src={product.imageUrl} alt={product.name} className="w-12 h-12 object-cover rounded-md" />
           <div>
             <p className="font-semibold text-slate-800">{product.name}</p>
-            <p className="text-xs text-slate-500">{product.barcode}</p>
+            <p className="text-xs text-slate-500">{product.barcode.startsWith('IMG-') ? 'Image Scan' : product.barcode}</p>
           </div>
         </button>
       ))
@@ -610,7 +614,7 @@ function App() {
       setIsLoading(false);
     }
   }, []);
-
+  
   const handleSelectHistoryItem = (product) => {
       setCurrentProduct(product);
       setActiveTab('scan');
@@ -643,7 +647,7 @@ function App() {
     <div className="min-h-screen bg-brand-light flex flex-col font-sans">
       <Header />
       <main className="flex-grow p-4 md:p-6">
-        {error && <p className="text-center text-red-600 bg-red-100 p-3 rounded-lg mb-4">{error}</p>}
+        {error && <p className="text-center text-red-600 bg-red-100 p-3 rounded-lg mb-4" onClick={() => setError(null)}>{error}</p>}
         {renderContent()}
       </main>
       <nav className="sticky bottom-0 bg-white shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
