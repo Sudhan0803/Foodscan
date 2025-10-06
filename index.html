@@ -41,6 +41,10 @@ import React, { useState, useCallback } from 'react';
 import ReactDOM from 'react-dom/client';
 import { GoogleGenAI } from "@google/genai";
 
+// --- CONFIGURATION ---
+// IMPORTANT: Replace "YOUR_API_KEY" with your actual Google API key
+const API_KEY = "AIzaSyADKRoWhuAbbE1XMQyaT4kskYSGBGR8CMI";
+
 // --- START of types.ts ---
 // Note: Interfaces are used for type-checking and are removed during transpilation.
 
@@ -297,15 +301,15 @@ const GeminiAnalysis = ({ product, onAnalysisComplete }) => {
         setSources([]);
 
         // Robust check for API Key availability
-        if (typeof process === 'undefined' || !process.env || !process.env.API_KEY) {
-            setError("API Key not found. Please ensure it's configured in your environment variables.");
+        if (!API_KEY || API_KEY === "YOUR_API_KEY") {
+            setError("API Key not found. Please add your API key to the script in index.html.");
             setIsAnalyzing(false);
             onAnalysisComplete('unknown');
             return;
         }
         
         try {
-            const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
+            const ai = new GoogleGenAI({apiKey: API_KEY});
             const prompt = `Act as a food safety expert for Indian consumers, with a deep focus on BIS standards.
 For the food product "${product.name}" (category: "${product.category}"), perform a web search and provide the following information in markdown format.
 
@@ -463,15 +467,15 @@ const ScannerComponent = ({ onScan, isLoading, onError }) => {
         setIsProcessingImage(true);
         onError(''); 
 
-        if (typeof process === 'undefined' || !process.env || !process.env.API_KEY) {
-            onError("API Key not found. Cannot analyze image without API key.");
+        if (!API_KEY || API_KEY === "YOUR_API_KEY") {
+            onError("API Key not found. Please add your API key to the script in index.html to enable image uploads.");
             setIsProcessingImage(false);
             event.target.value = '';
             return;
         }
 
         try {
-            const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
+            const ai = new GoogleGenAI({apiKey: API_KEY});
             const imagePart = await fileToGenerativePart(file);
             const response = await ai.models.generateContent({
                 model: 'gemini-2.5-flash',
